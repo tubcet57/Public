@@ -28,24 +28,36 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      - name: 4 编译
+      - name: 4 编译（先按 26.1.2，失败回退上游 26.1）
         run: |
-          set -o pipefail
           cd src
           chmod +x gradlew
-          if ./gradlew :fabric:build --no-daemon --stacktrace 2>&1 | tee /tmp/b.log; then
-            echo "成功: 按 26.1.2 构建"
-          else
+          ./gradlew :fabric:build --no-daemon > /tmp/b1.log 2>&1 || R1=$?
+          if [ -n "$R1" ]; then
             cp /tmp/lv.orig libs.versions.toml
             cp /tmp/gp.orig gradle.properties
             sed -i '/org.gradle.java.home/d' gradle.properties
-            if ./gradlew :fabric:build --no-daemon --stacktrace 2>&1 | tee /tmp/b.log; then
-              echo "成功: 回退 26.1 构建"
-            else
-              { echo '## 构建失败'; echo '```'; tail -n 120 /tmp/b.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
+            ./gradlew :fabric:build --no-daemon > /tmp/b2.log 2>&1 || R2=$?
           fi
+          if [ -z "$R1" ]; then echo "✅ 26.1.2 配置构建成功" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          if [ -z "$R2" ]; then echo "✅ 回退到上游 26.1 配置构建成功（产物声明 ~26.1，26.1.2 可加载）" >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          {
+            echo '## ❌ 构建失败（26.1.2 与回退 26.1 都没过）'
+            echo ''
+            echo '### 1. 失败的任务与原因'
+            echo '```text'
+            awk '/^FAILURE: Build failed/{f=1} f{print} /^\* Try:/{if(f)exit}' /tmp/b2.log | head -30
+            echo '```'
+            echo '### 2. 编译 / 依赖错误（前 60 条）'
+            echo '```text'
+            grep -hE 'error:|错误：|cannot find symbol|does not exist|Could not (find|resolve|determine|create)|Caused by:' /tmp/b2.log | head -60
+            echo '```'
+            echo '### 3. 日志尾部 20 行'
+            echo '```text'
+            tail -n 20 /tmp/b2.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: 5 上传 jar
         if: always()
